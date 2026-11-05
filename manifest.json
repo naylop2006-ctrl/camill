@@ -1,0 +1,10 @@
+{
+  "name": "Camill · Sistema operativo",
+  "short_name": "Camill",
+  "lang": "es-CO",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#770328",
+  "theme_color": "#770328",
+  "icons": [{ "src": "logo.png", "sizes": "755x790", "type": "image/png", "purpose": "any" }]
+}
