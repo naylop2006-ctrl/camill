@@ -271,7 +271,7 @@ input[type=date]{min-height:52px}
 .login .mos span svg.i{width:26px;height:26px}
 .login .mos .lg{background:var(--marfil)}
 .login .mos .lg img{width:48px}
-.login .txt{max-width:440px;animation:sube var(--t-slow) var(--ease) 80ms both}
+.login .txt{max-width:440px} /* sin animación: el botón de entrar siempre debe verse */
 .login h2{font-size:34px;line-height:1.1}
 .login h2 em{font-style:normal;color:var(--marfil)}
 .login p{color:var(--marfil);margin:12px 0 24px;line-height:1.5}
