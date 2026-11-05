@@ -15,6 +15,9 @@ const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const cop = n => '$' + Math.round(Number(n) || 0).toLocaleString('es-CO');
 const entero = v => parseInt(String(v ?? '').replace(/\D/g, ''), 10) || 0;
 const fmtMiles = v => { const d = String(v).replace(/\D/g, ''); return d ? parseInt(d, 10).toLocaleString('es-CO') : ''; };
+// Iconos del sprite de index.html
+const svg = (n, cls = '') => `<svg class="i ${cls}"><use href="#i-${n}"/></svg>`;
+const ic = n => `<span class="ic">${svg(n)}</span>`;
 
 // ---------- Fechas en hora de Colombia ----------
 const hoy = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
@@ -40,7 +43,9 @@ const activos = () => Object.values(EMP).filter(e => e.activo).sort((a, b) => a.
 // ---------- Utilidades de interfaz ----------
 function aviso(txt, mal = false) {
   const a = $('#aviso'); a.textContent = txt; a.className = 'aviso' + (mal ? ' mal' : ''); a.hidden = false;
-  clearTimeout(aviso.t); aviso.t = setTimeout(() => (a.hidden = true), mal ? 5000 : 2500);
+  requestAnimationFrame(() => requestAnimationFrame(() => a.classList.add('on')));
+  clearTimeout(aviso.t); clearTimeout(aviso.t2);
+  aviso.t = setTimeout(() => { a.classList.remove('on'); aviso.t2 = setTimeout(() => (a.hidden = true), 400); }, mal ? 5000 : 2500);
 }
 function errorTxt(e) {
   const m = e?.message || String(e);
@@ -76,14 +81,30 @@ const opcionesEmp = (sel, conVacio = '') => (conVacio ? `<option value="">${esc(
 
 function abrirHoja(titulo, html, montar) {
   const h = $('#hoja');
+  clearTimeout(cerrarHoja.t);
   h.innerHTML = `<div class="cab"><h2>${esc(titulo)}</h2><button class="cerrar" aria-label="Cerrar">×</button></div>${html}`;
-  $('#velo').hidden = false;
+  const v = $('#velo'); v.hidden = false;
+  requestAnimationFrame(() => requestAnimationFrame(() => v.classList.add('on')));
   $('.cerrar', h).onclick = cerrarHoja;
   montar?.(h);
 }
 function cerrarHoja() {
-  $('#velo').hidden = true; $('#hoja').innerHTML = '';
+  const v = $('#velo'); v.classList.remove('on');
+  clearTimeout(cerrarHoja.t);
+  cerrarHoja.t = setTimeout(() => { v.hidden = true; $('#hoja').innerHTML = ''; }, 260);
   if (pendienteRefresco) { pendienteRefresco = false; refrescar(); }
+}
+// Hoja "Registrar" del botón central
+function abrirRegistrar() {
+  const op = (href, color, icono, t, s) => `<a class="opcion" href="${href}"><span class="c ${color}">${svg(icono)}</span><b>${t}</b><span>${s}</span></a>`;
+  abrirHoja('¿Qué vas a registrar?', `<div class="opciones">
+    ${op('#domicilios', 'vino', 'truck', 'Domicilio', 'Orden y conjunto')}
+    ${op('#caja', 'car', 'wallet', 'Cierre de caja', 'Totales de Odoo')}
+    ${op('#faltantes', 'atl', 'box', 'Faltante', 'Agotado o por agotarse')}
+    ${op('#entrega', 'neb', 'note', 'Novedad', 'Para el siguiente turno')}
+    ${op('#correcciones', 'caf', 'pen', 'Corrección Odoo', 'Para el ingeniero')}
+    ${op('#mas', 'gris', 'grid', 'Más secciones', 'Vencimientos, mantenimiento…')}</div>`,
+    h => $$('.opcion', h).forEach(a => a.addEventListener('click', () => cerrarHoja())));
 }
 $('#velo').addEventListener('click', e => { if (e.target.id === 'velo') cerrarHoja(); });
 
@@ -138,16 +159,26 @@ VISTAS.inicio = {
   titulo: 'Inicio', tablas: ['cierres_caja', 'novedades', 'domicilios', 'faltantes', 'vencimientos', 'correcciones', 'mantenimiento', 'tareas_marcadas'],
   montar(el) {
     const h = horaCol(), saludo = h < 12 ? 'Buenos días' : h < 19 ? 'Buenas tardes' : 'Buenas noches';
-    el.innerHTML = `<h2 class="tit">${saludo}, ${esc(YO.nombre.split(' ')[0])}</h2><p class="sub">Esto es lo que necesita atención</p>
-      <div id="i-alertas"></div>
-      <div class="acciones">
-        <a class="accion" href="#domicilios"><i>＋</i>Nuevo domicilio</a>
-        <a class="accion v" href="#caja"><i>$</i>Cierre de caja</a>
-        <a class="accion" href="#faltantes"><i>!</i>Reportar faltante</a>
-        <a class="accion v" href="#entrega"><i>✎</i>Entrega de turno</a>
-      </div>
-      <a class="card" href="#turno" style="display:block;text-decoration:none;color:inherit"><h3>Mi turno</h3><div class="prog"><div id="i-prog" style="width:0"></div></div><small id="i-progtx" style="color:var(--suave)">…</small></a>
-      <div class="grid2" id="i-kpis"></div>`;
+    el.innerHTML = `<h1 class="tit">${saludo}, <em>${esc(YO.nombre.split(' ')[0])}</em></h1><p class="sub">Esto es lo que necesita atención hoy.</p>
+      <div class="rejilla">
+        <div>
+          <div id="i-alertas"></div>
+          <a class="hero" href="#turno"><span class="et">${svg('checks', 's')} <span id="i-turno">Mi turno</span></span>
+            <div class="fila-h"><div class="anillo" id="i-anillo"><span id="i-cuenta">…</span></div>
+            <div><div class="big" id="i-pct">0<small>%</small></div><p id="i-progtx">Cargando tus tareas…</p></div></div></a>
+        </div>
+        <div>
+          <h2 class="seccion">Accesos rápidos</h2>
+          <div class="rapidos">
+            <a class="rapido" href="#domicilios"><span class="c vino">${svg('truck')}</span>Domicilio</a>
+            <a class="rapido" href="#caja"><span class="c car">${svg('wallet')}</span>Cierre</a>
+            <a class="rapido" href="#faltantes"><span class="c atl">${svg('box')}</span>Faltante</a>
+            <a class="rapido" href="#entrega"><span class="c neb">${svg('note')}</span>Novedad</a>
+          </div>
+          <h2 class="seccion">Hoy en Camill</h2>
+          <div class="kpis" id="i-kpis"></div>
+        </div>
+      </div>`;
   },
   async cargar(el) {
     const d0 = sumarDias(hoy(), -6);
@@ -156,7 +187,7 @@ VISTAS.inicio = {
       q(sb.from('cierres_caja').select('fecha,turno').eq('anulado', false).gte('fecha', d0)),
       q(sb.from('cierres_caja').select('fecha').order('fecha').limit(1)),
       q(sb.from('novedades').select('*').eq('resuelta', false).order('creado_en', { ascending: false })),
-      q(sb.from('domicilios').select('id', { count: 'exact', head: false }).gte('fecha_hora', inicioDia(hoy())).neq('estado', 'Cancelado')),
+      q(sb.from('domicilios').select('id,valor_domicilio').gte('fecha_hora', inicioDia(hoy())).neq('estado', 'Cancelado')),
       q(sb.from('faltantes').select('id,prioridad').eq('estado', 'Pendiente de pedir')),
       q(sb.from('vencimientos').select('id').eq('estado', 'Vigente').lte('fecha_vencimiento', limite)),
       q(sb.from('correcciones').select('id').not('estado', 'in', '("Solucionado","No procede")')),
@@ -180,20 +211,25 @@ VISTAS.inicio = {
     }
     const misNov = novs.filter(n => !n.para_id || n.para_id === YO.id);
     $('#i-alertas', el).innerHTML =
-      faltan.map(([d, t]) => `<a class="alerta mal" href="#caja?fecha=${d}&turno=${encodeURIComponent(t)}"><span class="ic">●</span><div><b>Falta el cierre de caja: ${esc(t)}</b>${fFecha(d)} · toca para registrarlo</div></a>`).join('') +
-      (misNov.length ? `<a class="alerta av" href="#entrega"><span class="ic">●</span><div><b>${misNov.length} novedad${misNov.length > 1 ? 'es' : ''} sin resolver</b>${esc(misNov[0].texto.slice(0, 70))}${misNov[0].texto.length > 70 ? '…' : ''}</div></a>` : '') +
-      (!faltan.length && !misNov.length ? `<div class="alerta ok"><span class="ic">✓</span><div><b>Todo al día</b>No hay cierres ni novedades pendientes</div></div>` : '');
+      faltan.map(([d, t]) => `<a class="alerta mal" href="#caja?fecha=${d}&turno=${encodeURIComponent(t)}">${ic('alert')}<div><b>Falta el cierre de caja: ${esc(t)}</b>${fFecha(d)} · toca para registrarlo</div></a>`).join('') +
+      (misNov.length ? `<a class="alerta av" href="#entrega">${ic('note')}<div><b>${misNov.length} novedad${misNov.length > 1 ? 'es' : ''} sin resolver</b>${esc(misNov[0].texto.slice(0, 70))}${misNov[0].texto.length > 70 ? '…' : ''}</div></a>` : '') +
+      (!faltan.length && !misNov.length ? `<div class="alerta ok">${ic('check')}<div><b>Todo al día</b>No hay cierres ni novedades pendientes</div></div>` : '');
     const t = turnoSugerido() === 'Tarde' ? 'Turno 2' : 'Turno 1';
     const delTurno = tareas.filter(x => x.turno === t).map(x => x.id), hechas = marcas.filter(m => delTurno.includes(m.tarea_id)).length;
-    $('#i-prog', el).style.width = (delTurno.length ? hechas / delTurno.length * 100 : 0) + '%';
-    $('#i-progtx', el).textContent = `${t} · ${hechas} de ${delTurno.length} tareas hechas`;
-    const alta = falt.filter(f => f.prioridad === 'Alta').length;
-    $('#i-kpis', el).innerHTML = `
-      <a class="kpi" href="#domicilios"><span>Domicilios hoy</span><b>${domHoy.length}</b></a>
-      <a class="kpi" href="#faltantes"><span>Faltantes por pedir${alta ? ` · ${alta} urgentes` : ''}</span><b class="${alta ? 'rojo' : ''}">${falt.length}</b></a>
-      <a class="kpi" href="#vencimientos"><span>Vencen en 30 días</span><b class="${venc.length ? 'rojo' : ''}">${venc.length}</b></a>
-      <a class="kpi" href="#correcciones"><span>Correcciones abiertas</span><b>${corr.length}</b></a>
-      <a class="kpi" href="#mantenimiento"><span>Mantenimiento pendiente</span><b>${mant.length}</b></a>`;
+    const pct = delTurno.length ? Math.round(hechas / delTurno.length * 100) : 0, faltanT = delTurno.length - hechas;
+    $('#i-anillo', el).style.setProperty('--p', pct);
+    $('#i-cuenta', el).textContent = `${hechas}/${delTurno.length}`;
+    $('#i-pct', el).innerHTML = `${pct}<small>%</small>`;
+    $('#i-turno', el).textContent = `Mi turno · ${t}`;
+    $('#i-progtx', el).textContent = !delTurno.length ? 'No hay tareas para este turno.' : faltanT ? `Te falta${faltanT > 1 ? 'n' : ''} ${faltanT} tarea${faltanT > 1 ? 's' : ''}. Toca para verlas.` : '¡Completaste todas las tareas!';
+    const alta = falt.filter(f => f.prioridad === 'Alta').length, cobrados = domHoy.filter(d => d.valor_domicilio > 0).length;
+    const kpi = (href, clase, color, icono, titulo, valor, nota, rojo) => `<a class="kpi ${clase}" href="${href}"><span class="k"><span class="c ${color}">${svg(icono)}</span>${titulo}</span><span class="v${rojo ? ' rojo' : ''}">${valor}</span><span class="n">${nota}</span></a>`;
+    $('#i-kpis', el).innerHTML =
+      kpi('#domicilios', 'azul', '', 'truck', 'Domicilios', domHoy.length, cobrados ? `${cobrados} fuera de ${esc(AJ.conjunto_gratis || 'AquaNova')}` : 'hoy') +
+      kpi('#faltantes', '', 'car', 'box', 'Por pedir', falt.length, alta ? `${alta} urgente${alta > 1 ? 's' : ''}` : 'faltantes', alta) +
+      kpi('#vencimientos', '', 'amb', 'calendar', 'Vencen', venc.length, 'en 30 días', venc.length) +
+      kpi('#correcciones', '', 'atl', 'pen', 'Odoo', corr.length, 'correcciones abiertas') +
+      kpi('#mantenimiento', '', 'neb', 'wrench', 'Mantenimiento', mant.length, 'pendiente');
   }
 };
 
@@ -202,13 +238,14 @@ VISTAS.caja = {
   titulo: 'Cierre de caja', tablas: [],
   montar(el, p) {
     const fecha = p.get('fecha') || hoy(), turno = p.get('turno') || turnoSugerido();
-    el.innerHTML = `<h2 class="tit">Cierre de caja</h2><p class="sub">Copia los totales del turno desde Odoo</p>
+    el.innerHTML = `<h2 class="tit">Cierra tu <em>turno</em></h2><p class="sub">Copia los totales del turno desde Odoo.</p>
+      <div class="angosto">
       <div class="card">
         <label>Turno</label>${chips('turno', ['Mañana', 'Tarde', 'Fin de semana'], turno)}
         <div class="grid2"><div><label>Fecha</label><input type="date" id="c-fecha" value="${fecha}" max="${hoy()}"></div>
         <div><label>Responsable</label><input value="${esc(YO.nombre)}" disabled></div></div>
       </div>
-      <div class="card"><h3>Lo que dice Odoo</h3>
+      <div class="card"><h3>${svg('cash')}Lo que dice Odoo</h3>
         <label>Total vendido en el turno</label><input data-dinero inputmode="numeric" id="c-total" placeholder="0">
         <label>Efectivo</label><input data-dinero inputmode="numeric" id="c-ef" placeholder="0">
         <label>Nequi</label><input data-dinero inputmode="numeric" id="c-ne" placeholder="0">
@@ -218,14 +255,14 @@ VISTAS.caja = {
         <label>Observaciones <i>(opcional)</i></label><textarea id="c-obs" rows="2"></textarea>
       </div>
       <button class="btn pri" id="c-guardar" disabled>Guardar cierre</button>
-      <a class="btn lin" href="#resumen">Ver cierres anteriores</a>`;
+      <a class="btn lin" href="#resumen">Ver cierres anteriores</a></div>`;
     activarChips(el);
     const validar = () => {
       const t = entero($('#c-total').value), s = entero($('#c-ef').value) + entero($('#c-ne').value) + entero($('#c-ll').value);
       const ok = t > 0 && s === t;
       $('#c-suma').innerHTML = !t ? '' : ok
-        ? `<div class="alerta ok" style="margin:12px 0 0"><span class="ic">✓</span><div>Efectivo + Nequi + Llave = ${cop(t)}</div></div>`
-        : `<div class="alerta mal" style="margin:12px 0 0"><span class="ic">!</span><div><b>La suma no da el total</b>Suman ${cop(s)} y Odoo dice ${cop(t)}. Revisa si una transferencia quedó como efectivo o al revés.</div></div>`;
+        ? `<div class="alerta ok" style="margin:12px 0 0">${ic('check')}<div>Efectivo + Nequi + Llave = ${cop(t)}</div></div>`
+        : `<div class="alerta mal" style="margin:12px 0 0">${ic('alert')}<div><b>La suma no da el total</b>Suman ${cop(s)} y Odoo dice ${cop(t)}. Revisa si una transferencia quedó como efectivo o al revés.</div></div>`;
       $('#c-guardar').disabled = !ok;
     };
     camposDinero(el, validar);
@@ -247,16 +284,16 @@ VISTAS.caja = {
 VISTAS.resumen = {
   titulo: 'Resumen de caja', tablas: ['cierres_caja'],
   montar(el) {
-    el.innerHTML = `<h2 class="tit">Resumen de caja</h2>
-      <div class="filtros"><input type="date" id="r-desde" value="${sumarDias(hoy(), -6)}" max="${hoy()}"><input type="date" id="r-hasta" value="${hoy()}" max="${hoy()}"></div>
-      <div id="r-tot"></div><div id="r-lista"></div>`;
+    el.innerHTML = `<h2 class="tit">Resumen de <em>caja</em></h2><p class="sub">Cierres por fecha y totales por medio de pago.</p>
+      <div class="filtros"><input type="date" id="r-desde" value="${sumarDias(hoy(), -6)}" max="${hoy()}" aria-label="Desde"><input type="date" id="r-hasta" value="${hoy()}" max="${hoy()}" aria-label="Hasta"></div>
+      <div class="dos"><div id="r-tot"></div><div id="r-lista"></div></div>`;
     $('#r-desde').onchange = $('#r-hasta').onchange = () => this.cargar(el);
   },
   async cargar(el) {
     const desde = $('#r-desde', el).value, hasta = $('#r-hasta', el).value;
     const filas = await q(sb.from('cierres_caja').select('*').gte('fecha', desde).lte('fecha', hasta).order('fecha', { ascending: false }).order('registrado_en', { ascending: false }));
     const val = filas.filter(f => !f.anulado), sum = k => val.reduce((a, f) => a + f[k], 0);
-    $('#r-tot', el).innerHTML = `<div class="card"><h3>Total del periodo</h3><div class="res">
+    $('#r-tot', el).innerHTML = `<div class="card"><h3>${svg('chart')}Total del periodo</h3><div class="res azul">
       <div class="l"><span>Efectivo</span><b>${cop(sum('efectivo'))}</b></div><div class="l"><span>Nequi</span><b>${cop(sum('nequi'))}</b></div>
       <div class="l"><span>Llave</span><b>${cop(sum('llave'))}</b></div><div class="l tot"><span>Total</span><span>${cop(sum('total'))}</span></div></div></div>`;
     const dias = [...new Set(filas.map(f => f.fecha))];
@@ -282,13 +319,13 @@ VISTAS.resumen = {
         <label>Observaciones</label><textarea id="e-obs" rows="2" ${f.anulado || bloqueado ? 'disabled' : ''}>${esc(f.observaciones)}</textarea>
         <p class="ejemplo">Registrado por ${esc(nombre(f.responsable_id))} · ${fFechaHora(f.registrado_en)}</p>
       </div>
-      ${bloqueado ? '<div class="alerta az"><span class="ic">i</span><div>Este cierre ya entró en la recogida semanal. Solo un administrador puede corregirlo.</div></div>' : ''}
+      ${bloqueado ? `<div class="alerta az">${ic('info')}<div>Este cierre ya entró en la recogida semanal. Solo un administrador puede corregirlo.</div></div>` : ''}
       ${!f.anulado && !bloqueado ? `<button class="btn pri" id="e-guardar">Guardar corrección</button>
       <button class="btn lin" id="e-anular">Anular este cierre</button>` : ''}
       <button class="btn sec" data-historial>Ver historial de cambios</button>`, h => {
       const validar = () => {
         const t = entero($('#e-total', h).value), s = entero($('#e-ef', h).value) + entero($('#e-ne', h).value) + entero($('#e-ll', h).value);
-        $('#e-suma', h).innerHTML = s === t ? '' : `<div class="alerta mal" style="margin:10px 0 0"><span class="ic">!</span><div>Suman ${cop(s)} y el total es ${cop(t)}</div></div>`;
+        $('#e-suma', h).innerHTML = s === t ? '' : `<div class="alerta mal" style="margin:10px 0 0">${ic('alert')}<div>Suman ${cop(s)} y el total es ${cop(t)}</div></div>`;
         if ($('#e-guardar', h)) $('#e-guardar', h).disabled = s !== t || !t;
       };
       camposDinero(h, validar); botonHistorial(h, 'cierres_caja', f.id);
@@ -316,8 +353,9 @@ VISTAS.domicilios = {
   async montar(el) {
     const gratis = AJ.conjunto_gratis || 'AquaNova', tarifa = entero(AJ.tarifa_domicilio);
     const quienPorDefecto = activos().find(e => e.nombre === 'Luis')?.id || YO.id;
-    el.innerHTML = `<h2 class="tit">Domicilios</h2>
-      <div class="card"><h3>Registrar domicilio</h3>
+    el.innerHTML = `<h2 class="tit">Domicilios</h2><p class="sub">Registra cada domicilio al despacharlo.</p>
+      <div class="dos"><div>
+      <div class="card"><h3>${svg('plus')}Registrar domicilio</h3>
         <label>Número de orden (Odoo)</label><input id="d-orden" placeholder="S00419" autocomplete="off">
         <label>¿A dónde fue?</label>${chips('dest', [[gratis, gratis], ['otro', 'Otro conjunto']], gratis)}
         <input id="d-nombre" list="d-conjuntos" placeholder="Escribe el conjunto" style="margin-top:8px" hidden><datalist id="d-conjuntos"></datalist>
@@ -326,18 +364,18 @@ VISTAS.domicilios = {
         <label>Pago</label>${chips('pago', ['Efectivo', 'Nequi', 'Llave'], 'Efectivo')}
         <label>Observaciones <i>(opcional)</i></label><input id="d-obs">
         <button class="btn pri" id="d-guardar">Guardar · queda como Enviado</button>
-      </div>
+      </div></div><div>
       <div class="filtros"><input type="date" id="f-fecha" value="${hoy()}" max="${hoy()}">
         <select id="f-quien">${opcionesEmp('', 'Todas las personas')}</select>
         <select id="f-estado"><option value="">Todos los estados</option>${Object.keys(ESTADOS_DOM).map(s => `<option>${s}</option>`).join('')}</select>
         <input id="f-conj" placeholder="Buscar conjunto"></div>
-      <div class="card" id="d-lista"></div>`;
+      <div class="card" id="d-lista"></div></div></div>`;
     const pintarCobro = () => {
       const otro = valorChip(el, 'dest') === 'otro';
       $('#d-nombre').hidden = !otro;
       $('#d-cobro').innerHTML = otro
-        ? `<div class="alerta av" style="margin-top:10px"><span class="ic">$</span><div><b>Se cobra domicilio: ${cop(tarifa)}</b>Fuera de ${esc(gratis)}</div></div>`
-        : `<div class="alerta ok" style="margin-top:10px"><span class="ic">✓</span><div><b>Domicilio gratis</b>Dentro de ${esc(gratis)} no se cobra</div></div>`;
+        ? `<div class="alerta av" style="margin-top:10px">${ic('cash')}<div><b>Se cobra domicilio: ${cop(tarifa)}</b>Fuera de ${esc(gratis)}</div></div>`
+        : `<div class="alerta ok" style="margin-top:10px">${ic('check')}<div><b>Domicilio gratis</b>Dentro de ${esc(gratis)} no se cobra</div></div>`;
     };
     activarChips(el, g => g === 'dest' && pintarCobro()); pintarCobro();
     // Sugerencias de conjuntos ya escritos
@@ -399,11 +437,14 @@ VISTAS.turno = {
   titulo: 'Mi turno', tablas: ['tareas_marcadas', 'tareas'],
   montar(el) {
     this.turno = this.turno || (turnoSugerido() === 'Tarde' ? 'Turno 2' : 'Turno 1');
-    el.innerHTML = `<h2 class="tit">Mi turno</h2><p class="sub">${fFecha(hoy())} · marca lo que vas haciendo</p>
+    el.innerHTML = `<h2 class="tit">Mi <em>turno</em></h2><p class="sub">${fFecha(hoy())} · marca lo que vas haciendo.</p>
+      <div class="angosto">
+      <div class="hero azul"><span class="et">${svg('checks', 's')} Tu avance de hoy</span>
+        <div class="fila-h"><div class="anillo" id="t-prog"><span id="t-cuenta">…</span></div>
+        <div><div class="big" id="t-pct">0<small>%</small></div><p id="t-tx"></p></div></div></div>
       ${chips('turno', [['Turno 1', 'Turno 1 · Apertura'], ['Turno 2', 'Turno 2 · Cierre']], this.turno, 'vino')}
-      <div class="card" style="margin-top:12px"><div class="prog"><div id="t-prog"></div></div><small id="t-tx" style="color:var(--suave)"></small></div>
       <div class="card" id="t-lista"></div>
-      <a class="btn lin" href="#entrega">Anotar una novedad para el siguiente turno</a>`;
+      <a class="btn lin" href="#entrega">${svg('note')}Anotar una novedad para el siguiente turno</a></div>`;
     activarChips(el, (g, v) => { this.turno = v; this.cargar(el); });
   },
   async cargar(el) {
@@ -414,17 +455,24 @@ VISTAS.turno = {
     const hecha = id => marcas.find(m => m.tarea_id === id);
     let sec = '';
     $('#t-lista', el).innerHTML = tareas.length ? tareas.map(t => {
-      const m = hecha(t.id), cab = t.seccion !== sec ? `<h3 style="margin-top:${sec ? 12 : 0}px">${esc(t.seccion)}</h3>` : ''; sec = t.seccion;
-      return `${cab}<div class="check${m ? ' hecho' : ''}" data-id="${t.id}"><div class="box">✓</div><div><div class="tx">${esc(t.texto)}</div>${m ? `<small>Hecha a las ${fHora(m.hecha_en)}</small>` : ''}</div></div>`;
+      const m = hecha(t.id), cab = t.seccion !== sec ? `<h3>${esc(t.seccion)}</h3>` : ''; sec = t.seccion;
+      return `${cab}<div class="check${m ? ' hecho' : ''}" data-id="${t.id}" role="checkbox" aria-checked="${m ? 'true' : 'false'}" tabindex="0"><div class="box">${svg('check')}</div><div><div class="tx">${esc(t.texto)}</div>${m ? `<small>Hecha a las ${fHora(m.hecha_en)}</small>` : ''}</div></div>`;
     }).join('') : '<p class="vacio">No hay tareas para este turno. Un administrador puede agregarlas en Ajustes.</p>';
     const n = tareas.filter(t => hecha(t.id)).length;
-    $('#t-prog', el).style.width = (tareas.length ? n / tareas.length * 100 : 0) + '%';
+    const pct = tareas.length ? Math.round(n / tareas.length * 100) : 0;
+    $('#t-prog', el).style.setProperty('--p', pct);
+    $('#t-cuenta', el).textContent = `${n}/${tareas.length}`;
+    $('#t-pct', el).innerHTML = `${pct}<small>%</small>`;
     $('#t-tx', el).textContent = `${n} de ${tareas.length} tareas hechas`;
-    $$('.check', el).forEach(c => c.onclick = async () => {
-      const id = Number(c.dataset.id), m = hecha(id);
-      if (m) await q(sb.from('tareas_marcadas').delete().eq('id', m.id));
-      else await q(sb.from('tareas_marcadas').insert({ tarea_id: id }));
-      this.cargar(el);
+    $$('.check', el).forEach(c => {
+      c.onclick = async () => {
+        const id = Number(c.dataset.id), m = hecha(id);
+        c.classList.toggle('hecho'); // respuesta visual inmediata
+        if (m) await q(sb.from('tareas_marcadas').delete().eq('id', m.id));
+        else await q(sb.from('tareas_marcadas').insert({ tarea_id: id }));
+        this.cargar(el);
+      };
+      c.onkeydown = e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); c.onclick(); } };
     });
   }
 };
@@ -433,11 +481,12 @@ VISTAS.turno = {
 VISTAS.entrega = {
   titulo: 'Entrega de turno', tablas: ['novedades'],
   montar(el) {
-    el.innerHTML = `<h2 class="tit">Entrega de turno</h2><p class="sub">Lo que el siguiente turno debe saber</p>
-      <div class="card"><label>Novedad o pendiente</label><textarea id="n-tx" rows="3" placeholder="Ej.: el cliente de la orden S00409 pasa a pagar mañana"></textarea>
+    el.innerHTML = `<h2 class="tit">Entrega de <em>turno</em></h2><p class="sub">Lo que el siguiente turno debe saber.</p>
+      <div class="dos"><div>
+      <div class="card"><h3>${svg('note')}Dejar una novedad</h3><label>Novedad o pendiente</label><textarea id="n-tx" rows="3" placeholder="Ej.: el cliente de la orden S00409 pasa a pagar mañana"></textarea>
       <label>Para</label><select id="n-para"><option value="">Siguiente turno (todos)</option>${activos().filter(e => e.id !== YO.id).map(e => `<option value="${e.id}">${esc(e.nombre)}</option>`).join('')}</select>
-      <button class="btn pri" id="n-guardar">Dejar novedad</button></div>
-      <div id="n-lista"></div>`;
+      <button class="btn pri" id="n-guardar">Dejar novedad</button></div></div>
+      <div id="n-lista"></div></div>`;
     $('#n-guardar').onclick = async () => {
       const texto = $('#n-tx').value.trim(); if (!texto) return aviso('Escribe la novedad', true);
       await q(sb.from('novedades').insert({ texto, para_id: $('#n-para').value || null }));
@@ -451,7 +500,7 @@ VISTAS.entrega = {
     ]);
     const fila = n => `<div class="fila" style="cursor:default"><div>${esc(n.texto)}<small>${esc(nombre(n.creado_por))} · ${fFechaHora(n.creado_en)}${n.para_id ? ' · para ' + esc(nombre(n.para_id)) : ''}${n.resuelta ? ` · resuelta por ${esc(nombre(n.resuelta_por))} ${fFechaHora(n.resuelta_en)}` : ''}</small></div>
       <div class="der">${n.resuelta ? `<button class="btn lin peq" data-reabrir="${n.id}">Reabrir</button>` : `<button class="btn sec peq" data-resolver="${n.id}">Resuelta</button>`}</div></div>`;
-    $('#n-lista', el).innerHTML = `<div class="card"><h3>Sin resolver (${abiertas.length})</h3>${abiertas.map(fila).join('') || '<p class="vacio">Nada pendiente 🙌</p>'}</div>
+    $('#n-lista', el).innerHTML = `<div class="card"><h3>Sin resolver (${abiertas.length})</h3>${abiertas.map(fila).join('') || '<p class="vacio">Nada pendiente</p>'}</div>
       <div class="card"><h3>Resueltas recientemente</h3>${cerradas.map(fila).join('') || '<p class="vacio">—</p>'}</div>`;
     $$('[data-resolver]', el).forEach(b => b.onclick = async () => { await q(sb.from('novedades').update({ resuelta: true }).eq('id', b.dataset.resolver)); this.cargar(el); });
     $$('[data-reabrir]', el).forEach(b => b.onclick = async () => { await q(sb.from('novedades').update({ resuelta: false }).eq('id', b.dataset.reabrir)); this.cargar(el); });
@@ -464,24 +513,25 @@ VISTAS.faltantes = {
   titulo: 'Faltantes', tablas: ['faltantes'],
   montar(el) {
     this.pest = this.pest || 'por';
-    el.innerHTML = `<h2 class="tit">Faltantes</h2>
+    el.innerHTML = `<h2 class="tit">Faltantes</h2><p class="sub">Lo agotado o lo que pidió un cliente sale primero.</p>
+      <div class="dos"><div>
       ${chips('pest', [['por', 'Por pedir'], ['ped', 'Pedidos'], ['fin', 'Cerrados']], this.pest)}
-      <div class="card" id="fa-lista" style="margin-top:12px"></div>
-      <div class="card"><h3>Reportar faltante</h3>
+      <div class="card" id="fa-lista"></div></div><div>
+      <div class="card"><h3>${svg('box')}Reportar faltante</h3>
         <label>Producto</label><input id="fa-prod" autocomplete="off">
         <div id="fa-dup"></div>
         <label>Presentación <i>(opcional)</i></label><input id="fa-pres" placeholder="Ej.: caja x 10, frasco 120 ml">
         <label>Situación</label>${chips('sit', [['Agotado', 'Agotado'], ['Por agotarse', 'Por agotarse'], ['Pedido por cliente', 'Lo pidió un cliente']], 'Agotado')}
         <div class="grid2"><div><label>Quedan <i>(si sabes)</i></label><input id="fa-disp" inputmode="numeric"></div><div><label>Cantidad a pedir</label><input id="fa-ped" inputmode="numeric"></div></div>
         <label>Observaciones <i>(opcional)</i></label><input id="fa-obs">
-        <button class="btn pri" id="fa-guardar">Reportar</button></div>`;
+        <button class="btn pri" id="fa-guardar">Reportar</button></div></div></div>`;
     activarChips(el, (g, v) => { if (g === 'pest') { this.pest = v; this.cargar(el); } });
     $('#fa-prod').oninput = () => {
       clearTimeout(this.t); const txt = $('#fa-prod').value.trim();
       this.t = setTimeout(async () => {
         if (txt.length < 3) return ($('#fa-dup').innerHTML = '');
         const ya = await q(sb.from('faltantes').select('producto,estado').ilike('producto', `%${txt}%`).in('estado', ['Pendiente de pedir', 'Pedido']).limit(3));
-        $('#fa-dup').innerHTML = ya.length ? `<div class="alerta av" style="margin-top:8px"><span class="ic">!</span><div><b>Ya está en la lista</b>${ya.map(y => esc(y.producto) + ' (' + esc(y.estado) + ')').join(', ')}</div></div>` : '';
+        $('#fa-dup').innerHTML = ya.length ? `<div class="alerta av" style="margin-top:8px">${ic('alert')}<div><b>Ya está en la lista</b>${ya.map(y => esc(y.producto) + ' (' + esc(y.estado) + ')').join(', ')}</div></div>` : '';
       }, 350);
     };
     $('#fa-guardar').onclick = async () => {
@@ -530,16 +580,17 @@ VISTAS.correcciones = {
   titulo: 'Correcciones Odoo', tablas: ['correcciones'],
   montar(el) {
     this.pest = this.pest || 'abiertas';
-    el.innerHTML = `<h2 class="tit">Correcciones de Odoo</h2><p class="sub">Sandra o Juan Camilo las envían al ingeniero</p>
+    el.innerHTML = `<h2 class="tit">Correcciones de <em>Odoo</em></h2><p class="sub">Sandra o Juan Camilo las envían al ingeniero.</p>
+      <div class="dos"><div>
       ${chips('pest', [['abiertas', 'Abiertas'], ['cerradas', 'Cerradas']], this.pest)}
-      <div class="card" id="co-lista" style="margin-top:12px"></div>
-      <div class="card"><h3>Reportar corrección</h3>
+      <div class="card" id="co-lista"></div></div><div>
+      <div class="card"><h3>${svg('pen')}Reportar corrección</h3>
         <label>Tipo</label><select id="co-tipo">${TIPOS_CORR.map(t => `<option>${t}</option>`).join('')}</select>
         <label>Producto o sección afectada</label><input id="co-prod">
         <label>¿Qué pasa?</label><textarea id="co-desc" rows="3"></textarea>
         <label>Prioridad</label>${chips('prio', ['Alta', 'Media', 'Baja'], 'Media')}
         <label>Captura <i>(opcional, máx. 5 MB)</i></label><input type="file" id="co-foto" accept="image/*">
-        <button class="btn pri" id="co-guardar">Reportar</button></div>`;
+        <button class="btn pri" id="co-guardar">Reportar</button></div></div></div>`;
     activarChips(el, (g, v) => { if (g === 'pest') { this.pest = v; this.cargar(el); } });
     $('#co-guardar').onclick = async () => {
       const prod = $('#co-prod').value.trim(), desc = $('#co-desc').value.trim();
@@ -563,7 +614,7 @@ VISTAS.correcciones = {
     c = this.pest === 'abiertas' ? c.not('estado', 'in', '("Solucionado","No procede")') : c.in('estado', ['Solucionado', 'No procede']).limit(50);
     const filas = await q(c);
     $('#co-lista', el).innerHTML = filas.length ? filas.map(f => `<div class="fila" data-id="${f.id}"><div>${esc(f.tipo)} · ${esc(f.producto_seccion)}
-      <small>${f.prioridad === 'Alta' ? '<b style="color:var(--carmesi)">Alta</b> · ' : ''}${esc(nombre(f.reportado_por))} · ${fFecha(fechaDe(f.reportado_en))}${this.pest === 'abiertas' ? ' · ' + haceDias(fechaDe(f.reportado_en)) : ''}${f.evidencia ? ' · 📎' : ''}</small></div>
+      <small>${f.prioridad === 'Alta' ? '<b style="color:var(--carmesi)">Alta</b> · ' : ''}${esc(nombre(f.reportado_por))} · ${fFecha(fechaDe(f.reportado_en))}${this.pest === 'abiertas' ? ' · ' + haceDias(fechaDe(f.reportado_en)) : ''}${f.evidencia ? ' · con captura' : ''}</small></div>
       <span class="est ${EST_CORR[f.estado]}">${esc(f.estado)}</span></div>`).join('') : '<p class="vacio">No hay correcciones aquí</p>';
     $$('.fila', el).forEach(r => r.onclick = () => this.detalle(filas.find(x => x.id == r.dataset.id)));
   },
@@ -592,13 +643,14 @@ VISTAS.correcciones = {
 VISTAS.vencimientos = {
   titulo: 'Próximos a vencer', tablas: ['vencimientos'],
   montar(el) {
-    el.innerHTML = `<h2 class="tit">Próximos a vencer</h2><p class="sub">Anota los productos que notes cerca de su fecha</p>
-      <div class="card" id="v-lista"></div>
-      <div class="card"><h3>Anotar producto</h3>
+    el.innerHTML = `<h2 class="tit">Próximos a <em>vencer</em></h2><p class="sub">Anota los productos que notes cerca de su fecha.</p>
+      <div class="dos"><div>
+      <div class="card" id="v-lista"></div></div><div>
+      <div class="card"><h3>${svg('calendar')}Anotar producto</h3>
         <label>Producto</label><input id="v-prod">
         <div class="grid2"><div><label>Ubicación <i>(ej. A3D)</i></label><input id="v-ubi"></div><div><label>Cantidad</label><input id="v-cant" inputmode="numeric"></div></div>
         <label>Fecha de vencimiento</label><input type="date" id="v-fecha" min="${sumarDias(hoy(), -365)}">
-        <button class="btn pri" id="v-guardar">Guardar</button></div>`;
+        <button class="btn pri" id="v-guardar">Guardar</button></div></div></div>`;
     $('#v-guardar').onclick = async () => {
       const producto = $('#v-prod').value.trim(), fecha = $('#v-fecha').value;
       if (!producto || !fecha) return aviso('Escribe el producto y la fecha', true);
@@ -631,12 +683,13 @@ const EST_MANT = { 'Pendiente': 'av', 'En proceso': 'az', 'Resuelto': 'ok' };
 VISTAS.mantenimiento = {
   titulo: 'Mantenimiento', tablas: ['mantenimiento'],
   montar(el) {
-    el.innerHTML = `<h2 class="tit">Mantenimiento</h2><p class="sub">Equipos y local</p>
-      <div class="card" id="m-lista"></div>
-      <div class="card"><h3>Reportar</h3>
+    el.innerHTML = `<h2 class="tit">Mantenimiento</h2><p class="sub">Equipos y local.</p>
+      <div class="dos"><div>
+      <div class="card" id="m-lista"></div></div><div>
+      <div class="card"><h3>${svg('wrench')}Reportar</h3>
         <label>Equipo o área</label>${chips('area', ['Nevera', 'Computador', 'Celular', 'Local', 'Otro'], 'Nevera')}
         <label>¿Qué pasa?</label><textarea id="m-desc" rows="2"></textarea>
-        <button class="btn pri" id="m-guardar">Reportar</button></div>`;
+        <button class="btn pri" id="m-guardar">Reportar</button></div></div></div>`;
     activarChips(el);
     $('#m-guardar').onclick = async () => {
       const descripcion = $('#m-desc').value.trim(); if (!descripcion) return aviso('Describe qué pasa', true);
@@ -665,8 +718,9 @@ VISTAS.mantenimiento = {
 VISTAS.semana = {
   titulo: 'Cierre semanal', tablas: ['cierres_caja', 'domicilios'], admin: true,
   montar(el) {
-    el.innerHTML = `<h2 class="tit">Cierre semanal</h2><p class="sub">Pago de domicilios y recogida del efectivo</p><div id="s-prev"></div><div id="s-hist"></div>
-      <button class="btn lin" id="s-resp">Descargar respaldo en Excel</button>`;
+    el.innerHTML = `<h2 class="tit">Cierre <em>semanal</em></h2><p class="sub">Pago de domicilios y recogida del efectivo.</p>
+      <div class="dos"><div id="s-prev"></div><div><div id="s-hist"></div>
+      <button class="btn lin" id="s-resp">${svg('chart')}Descargar respaldo en Excel</button></div></div>`;
     $('#s-resp').onclick = descargarRespaldo;
   },
   async cargar(el) {
@@ -677,7 +731,7 @@ VISTAS.semana = {
         ${v.pagos.map(p => `<div class="fila" style="cursor:default"><div>${esc(p.nombre)}<small>${p.cantidad} domicilio${p.cantidad > 1 ? 's' : ''} fuera de ${esc(AJ.conjunto_gratis)}</small></div><b>${cop(p.valor)}</b></div>`).join('') || '<p class="vacio">No hay domicilios cobrados pendientes de pago</p>'}
         <div class="res"><div class="l tot"><span>Total a pagar</span><span>${cop(pago)}</span></div></div></div>
       <div class="card"><h3>Recogida del efectivo</h3>
-        <div class="res" style="background:var(--az-bg);color:var(--atlantico);margin-top:0">
+        <div class="res azul">
           <div class="l"><span>Base</span><b>${cop(v.base)}</b></div>
           <div class="l"><span>+ Efectivo vendido (${v.cierres} cierres)</span><b>${cop(v.efectivo_ventas)}</b></div>
           <div class="l"><span>= Debería haber en el cajón</span><b>${cop(v.base + v.efectivo_ventas)}</b></div>
@@ -701,13 +755,15 @@ VISTAS.semana = {
 VISTAS.mas = {
   titulo: 'Más', tablas: [],
   montar(el) {
-    el.innerHTML = `<h2 class="tit">Más secciones</h2>
+    const it = (href, color, icono, t) => `<a href="${href}"><span class="c ${color}">${svg(icono)}</span>${t}</a>`;
+    el.innerHTML = `<h2 class="tit">Más <em>secciones</em></h2><p class="sub">Todo lo que no está en la barra de abajo.</p>
+      <div class="dos"><div>
       <div class="card menu">
-        <a href="#resumen">Resumen de caja</a><a href="#entrega">Entrega de turno</a><a href="#faltantes">Faltantes</a>
-        <a href="#correcciones">Correcciones de Odoo</a><a href="#vencimientos">Próximos a vencer</a><a href="#mantenimiento">Mantenimiento</a>
-      </div>
-      ${esAdmin() ? `<div class="card menu"><a href="#semana">Cierre semanal y pago de domicilios</a><a href="#ajustes">Ajustes: empleados, tareas y valores</a></div>` : ''}
-      <div class="card"><p>Sesión: <b>${esc(YO.nombre)}</b> · ${esc(YO.correo)}${esAdmin() ? ' · administrador' : ''}</p><button class="btn lin" id="salir">Cerrar sesión</button></div>`;
+        ${it('#resumen', 'car', 'chart', 'Resumen de caja')}${it('#entrega', 'neb', 'note', 'Entrega de turno')}${it('#faltantes', 'atl', 'box', 'Faltantes')}
+        ${it('#correcciones', 'caf', 'pen', 'Correcciones de Odoo')}${it('#vencimientos', 'amb', 'calendar', 'Próximos a vencer')}${it('#mantenimiento', 'gris', 'wrench', 'Mantenimiento')}
+      </div></div><div>
+      ${esAdmin() ? `<div class="card menu">${it('#semana', 'vino', 'cash', 'Cierre semanal y pago de domicilios')}${it('#ajustes', 'gris', 'gear', 'Ajustes: empleados, tareas y valores')}</div>` : ''}
+      <div class="card"><p>Sesión: <b>${esc(YO.nombre)}</b> · ${esc(YO.correo)}${esAdmin() ? ' · administrador' : ''}</p><button class="btn lin" id="salir">${svg('out')}Cerrar sesión</button></div></div></div>`;
     $('#salir').onclick = async () => { await sb.auth.signOut(); location.hash = ''; location.reload(); };
   }
 };
@@ -715,7 +771,7 @@ VISTAS.mas = {
 // ---------------- AJUSTES (admin) ----------------
 VISTAS.ajustes = {
   titulo: 'Ajustes', tablas: ['empleados', 'tareas', 'ajustes'], admin: true,
-  montar(el) { el.innerHTML = `<h2 class="tit">Ajustes</h2><div id="a-emp"></div><div id="a-val"></div><div id="a-tar"></div>`; },
+  montar(el) { el.innerHTML = `<h2 class="tit">Ajustes</h2><p class="sub">Empleados, valores y tareas de los turnos.</p><div class="dos"><div><div id="a-emp"></div><div id="a-val"></div></div><div id="a-tar"></div></div>`; },
   async cargar(el) {
     const [emps, tareas, ajustes] = await Promise.all([q(sb.from('empleados').select('*').order('nombre')), q(sb.from('tareas').select('*').order('turno').order('orden')), q(sb.from('ajustes').select('*'))]);
     EMP = Object.fromEntries(emps.map(e => [e.id, e])); AJ = Object.fromEntries(ajustes.map(a => [a.clave, a.valor]));
@@ -798,16 +854,23 @@ async function navegar() {
   $('#barra-sub').textContent = `${fFecha(hoy())} · ${v.titulo}`;
   $$('#nav a').forEach(a => a.classList.toggle('act', a.dataset.v === nombreVista));
   window.scrollTo(0, 0);
-  try { await v.montar(el, new URLSearchParams(qs || '')); await v.cargar?.(el); }
-  catch (e) { console.error(e); }
+  try {
+    el.classList.remove('entra');
+    await v.montar(el, new URLSearchParams(qs || ''));
+    void el.offsetWidth; el.classList.add('entra'); // entrada escalonada de tarjetas
+    await v.cargar?.(el);
+  } catch (e) { console.error(e); }
 }
 
 function pantallaIngreso(mensaje = '') {
   $('#barra').hidden = true; $('#nav').hidden = true;
-  $('#pantalla').innerHTML = `<div class="login"><img src="logo.png" alt="Camill Droguería"><h2>Sistema operativo</h2>
-    <p>${mensaje || 'Entra con tu cuenta de Google.<br>Solo pueden entrar los correos autorizados.'}</p>
+  const m = n => `<span>${svg(n)}</span>`;
+  $('#pantalla').innerHTML = `<div class="login">
+    <div class="mos" aria-hidden="true">${m('truck')}${m('wallet')}${m('box')}${m('checks')}<span class="lg"><img src="logo.png" alt=""></span>${m('note')}${m('calendar')}${m('pen')}${m('wrench')}</div>
+    <div class="txt"><h2>Tu turno,<br><em>en orden.</em></h2>
+    <p>${mensaje || 'El sistema de Camill. Droguería. Entra con tu cuenta de Google; solo pueden entrar los correos autorizados.'}</p>
     <button class="google" id="g"><svg width="20" height="20" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C36.9 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>${mensaje ? 'Entrar con otra cuenta' : 'Entrar con Google'}</button>
-    <a href="privacidad.html" style="color:var(--marfil);opacity:.8;margin-top:22px;font-size:14px">Política de privacidad</a></div>`;
+    <a class="priv" href="privacidad.html">Política de privacidad</a></div></div>`;
   $('#g').onclick = async () => {
     if (mensaje) await sb.auth.signOut();
     await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname, queryParams: { prompt: 'select_account' } } });
@@ -831,6 +894,7 @@ async function iniciar() {
   AJ = Object.fromEntries((await q(sb.from('ajustes').select('*'))).map(a => [a.clave, a.valor]));
   $('#barra').hidden = false; $('#nav').hidden = false;
   $('#avatar').textContent = YO.nombre[0].toUpperCase(); $('#avatar').onclick = () => (location.hash = '#mas');
+  $('#registrar').onclick = abrirRegistrar;
   if (location.hash.includes('access_token')) history.replaceState(null, '', location.pathname);
   window.addEventListener('hashchange', navegar);
   // Tiempo real: si otra persona registra algo, la lista visible se actualiza sola
