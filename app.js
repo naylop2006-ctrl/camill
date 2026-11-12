@@ -559,6 +559,44 @@ VISTAS.entrega = {
   }
 };
 
+// ---------------- CATÁLOGO DE PRODUCTOS (sugerencias) ----------------
+// Se carga una sola vez (unos 800 nombres) y se busca en el celular: rápido y sin esperar a internet.
+let PRODUCTOS = null;
+const normal = t => String(t ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
+async function todas(consulta) { // trae todas las filas, de 1000 en 1000
+  let todo = [], desde = 0;
+  for (;;) { const lote = await q(consulta().range(desde, desde + 999)); todo = todo.concat(lote); if (lote.length < 1000) return todo; desde += 1000; }
+}
+async function cargarProductos() {
+  if (!PRODUCTOS) PRODUCTOS = (await todas(() => sb.from('productos').select('id,nombre,referencia,categoria').eq('activo', true).order('nombre')))
+    .map(p => ({ ...p, k: normal(p.nombre) + ' ' + normal(p.referencia) }));
+  return PRODUCTOS;
+}
+function buscarProductos(txt, max = 8) {
+  const palabras = normal(txt).split(/\s+/).filter(Boolean);
+  if (!palabras.length || !PRODUCTOS) return [];
+  return PRODUCTOS.filter(p => palabras.every(w => p.k.includes(w)))
+    .sort((a, b) => (b.k.startsWith(palabras[0]) - a.k.startsWith(palabras[0])) || a.nombre.localeCompare(b.nombre)).slice(0, max);
+}
+// Resalta las palabras buscadas dentro del nombre
+function resaltar(nombreProd, txt) {
+  const palabras = normal(txt).split(/\s+/).filter(Boolean), base = normal(nombreProd), marca = new Array(nombreProd.length).fill(false);
+  palabras.forEach(w => { let i = base.indexOf(w); while (i >= 0) { for (let j = i; j < i + w.length; j++) marca[j] = true; i = base.indexOf(w, i + 1); } });
+  let html = '', abierto = false;
+  [...nombreProd].forEach((ch, i) => { if (marca[i] !== abierto) { html += marca[i] ? '<mark>' : '</mark>'; abierto = marca[i]; } html += esc(ch); });
+  return html + (abierto ? '</mark>' : '');
+}
+async function cargarXLSX() {
+  if (!window.XLSX) await new Promise((ok, mal) => { const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; s.onload = ok; s.onerror = mal; document.head.appendChild(s); });
+}
+// Hoja de Excel con columnas de ancho cómodo
+function hojaExcel(filas) {
+  const ws = XLSX.utils.json_to_sheet(filas.length ? filas : [{ 'Sin datos': '' }]);
+  const cols = Object.keys(filas[0] || { 'Sin datos': '' });
+  ws['!cols'] = cols.map(c => ({ wch: Math.min(60, Math.max(c.length, ...filas.map(f => String(f[c] ?? '').length)) + 2) }));
+  return ws;
+}
+
 // ---------------- FALTANTES ----------------
 const EST_FALT = ['Pendiente de pedir', 'Pedido', 'Recibido', 'Recibido incompleto', 'Sin existencia en proveedor'];
 VISTAS.faltantes = {
@@ -568,37 +606,101 @@ VISTAS.faltantes = {
     el.innerHTML = `<h2 class="tit">Faltantes</h2><p class="sub">Lo agotado o lo que pidió un cliente sale primero.</p>
       <div class="dos"><div>
       ${chips('pest', [['por', 'Por pedir'], ['ped', 'Pedidos'], ['fin', 'Cerrados']], this.pest)}
-      <div class="card" id="fa-lista"></div></div><div>
+      <div class="card"><div id="fa-lista"></div><button class="btn lin" id="fa-excel">${svg('chart')}Descargar esta lista en Excel</button></div></div><div>
       <div class="card"><h3>${svg('box')}Reportar faltante</h3>
-        <label>Producto</label><input id="fa-prod" autocomplete="off">
+        <label for="fa-prod">Producto</label><input id="fa-prod" autocomplete="off" placeholder="Escribe parte del nombre o el código" role="combobox" aria-autocomplete="list" aria-controls="fa-sug" aria-expanded="false">
+        <div class="sugs" id="fa-sug" role="listbox" hidden></div>
+        <p class="pista" id="fa-pista">Escribe y elige el producto de la lista.</p>
         <div id="fa-dup"></div>
         <label>Presentación <i>(opcional)</i></label><input id="fa-pres" placeholder="Ej.: caja x 10, frasco 120 ml">
         <label>Situación</label>${chips('sit', [['Agotado', 'Agotado'], ['Por agotarse', 'Por agotarse'], ['Pedido por cliente', 'Lo pidió un cliente']], 'Agotado')}
         <div class="grid2"><div><label>Quedan <i>(si sabes)</i></label><input id="fa-disp" inputmode="numeric"></div><div><label>Cantidad a pedir</label><input id="fa-ped" inputmode="numeric"></div></div>
         <label>Observaciones <i>(opcional)</i></label><input id="fa-obs">
         <button class="btn pri" id="fa-guardar">Reportar</button></div></div></div>`;
-    activarChips(el, (g, v) => { if (g === 'pest') { this.pest = v; this.cargar(el); } });
-    $('#fa-prod').oninput = () => {
-      clearTimeout(this.t); const txt = $('#fa-prod').value.trim();
-      this.t = setTimeout(async () => {
-        if (txt.length < 3) return ($('#fa-dup').innerHTML = '');
-        const ya = await q(sb.from('faltantes').select('producto,estado').ilike('producto', `%${txt}%`).in('estado', ['Pendiente de pedir', 'Pedido']).limit(3));
-        $('#fa-dup').innerHTML = ya.length ? `<div class="alerta av" style="margin-top:8px">${ic('alert')}<div><b>Ya está en la lista</b>${ya.map(y => esc(y.producto) + ' (' + esc(y.estado) + ')').join(', ')}</div></div>` : '';
-      }, 350);
+    const entrada = $('#fa-prod'), caja = $('#fa-sug'), pista = $('#fa-pista');
+    let elegido = null, opciones = [], activa = -1;
+    const esCliente = () => valorChip(el, 'sit') === 'Pedido por cliente';
+    const ponerPista = () => {
+      entrada.classList.toggle('elegido', !!elegido);
+      pista.className = 'pista' + (elegido ? ' ok' : '');
+      pista.innerHTML = elegido ? `${svg('check')}Del sistema${elegido.categoria ? ' · ' + esc(elegido.categoria) : ''}${elegido.referencia ? ' · ' + esc(elegido.referencia) : ''}`
+        : esCliente() ? 'Si no está en la lista, escríbelo tal como lo pidió el cliente.' : 'Escribe y elige el producto de la lista.';
     };
+    const cerrarSug = () => { caja.hidden = true; caja.innerHTML = ''; entrada.setAttribute('aria-expanded', 'false'); activa = -1; };
+    const revisarRepetido = async producto => {
+      if (producto.length < 3) return ($('#fa-dup').innerHTML = '');
+      const ya = await q(sb.from('faltantes').select('producto,estado').ilike('producto', `%${producto}%`).in('estado', ['Pendiente de pedir', 'Pedido']).limit(3));
+      $('#fa-dup').innerHTML = ya.length ? `<div class="alerta av" style="margin-top:8px">${ic('alert')}<div><b>Ya está en la lista</b>${ya.map(y => esc(y.producto) + ' (' + esc(y.estado) + ')').join(', ')}</div></div>` : '';
+    };
+    const elegir = p => { elegido = p; entrada.value = p.nombre; cerrarSug(); ponerPista(); revisarRepetido(p.nombre); };
+    const pintarSug = () => {
+      const txt = entrada.value.trim();
+      opciones = txt.length >= 2 ? buscarProductos(txt) : [];
+      const libre = esCliente() && txt.length >= 2;
+      if (!opciones.length && !libre) {
+        if (txt.length >= 2 && PRODUCTOS) { caja.hidden = false; caja.innerHTML = `<p class="sug-vacia">No aparece en el sistema. Si lo pidió un cliente, marca <b>Lo pidió un cliente</b> abajo.</p>`; }
+        else cerrarSug();
+        return;
+      }
+      caja.innerHTML = opciones.map((p, i) => `<button type="button" class="sug${i === activa ? ' act' : ''}" role="option" data-i="${i}"><b>${resaltar(p.nombre, txt)}</b><small>${esc(p.categoria || 'Sin categoría')}${p.referencia ? ' · ' + esc(p.referencia) : ''}</small></button>`).join('')
+        + (libre ? `<button type="button" class="sug libre" data-libre="1"><b>Usar «${esc(txt)}»</b><small>No está en el sistema · lo pidió un cliente</small></button>` : '');
+      caja.hidden = false; entrada.setAttribute('aria-expanded', 'true');
+      $$('[data-i]', caja).forEach(b => b.onmousedown = ev => { ev.preventDefault(); elegir(opciones[+b.dataset.i]); });
+      const bl = $('[data-libre]', caja); if (bl) bl.onmousedown = ev => { ev.preventDefault(); cerrarSug(); revisarRepetido(txt); };
+    };
+    cargarProductos().catch(() => { pista.textContent = 'No se pudo cargar la lista de productos. Puedes escribirlo a mano.'; });
+    entrada.oninput = () => { elegido = null; activa = -1; ponerPista(); pintarSug(); clearTimeout(this.t); this.t = setTimeout(() => revisarRepetido(entrada.value.trim()), 400); };
+    entrada.onfocus = () => { if (!elegido && entrada.value.trim()) pintarSug(); };
+    entrada.onblur = () => setTimeout(cerrarSug, 120);
+    entrada.onkeydown = ev => {
+      if (caja.hidden || !opciones.length) return;
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); activa = (activa + (ev.key === 'ArrowDown' ? 1 : -1) + opciones.length) % opciones.length; pintarSug(); }
+      else if (ev.key === 'Enter') { ev.preventDefault(); elegir(opciones[Math.max(activa, 0)]); }
+      else if (ev.key === 'Escape') cerrarSug();
+    };
+    activarChips(el, (g, v) => {
+      if (g === 'pest') { this.pest = v; this.cargar(el); }
+      if (g === 'sit') { ponerPista(); if (document.activeElement === entrada) pintarSug(); }
+    });
+    $('#fa-excel').onclick = () => this.excel();
     $('#fa-guardar').onclick = async () => {
-      const producto = $('#fa-prod').value.trim(); if (!producto) return aviso('Escribe el producto', true);
+      const producto = entrada.value.trim(); if (!producto) return aviso('Escribe el producto', true);
+      // Agotado o por agotarse: debe ser un producto del sistema (si la lista cargó)
+      if (!elegido && !esCliente() && PRODUCTOS?.length) {
+        const exacto = PRODUCTOS.find(p => normal(p.nombre) === normal(producto));
+        if (exacto) elegido = exacto;
+        else { entrada.focus(); pintarSug(); return aviso('Elige el producto de la lista. Si no está en el sistema, marca «Lo pidió un cliente».', true); }
+      }
       const n = v => v.trim() === '' ? null : entero(v);
-      await q(sb.from('faltantes').insert({ producto, presentacion: $('#fa-pres').value.trim() || null, situacion: valorChip(el, 'sit'), cantidad_disponible: n($('#fa-disp').value), cantidad_pedir: n($('#fa-ped').value), observaciones: $('#fa-obs').value.trim() || null }));
+      await q(sb.from('faltantes').insert({ producto: elegido?.nombre ?? producto, producto_id: elegido?.id ?? null, presentacion: $('#fa-pres').value.trim() || null, situacion: valorChip(el, 'sit'), cantidad_disponible: n($('#fa-disp').value), cantidad_pedir: n($('#fa-ped').value), observaciones: $('#fa-obs').value.trim() || null }));
       ['fa-prod', 'fa-pres', 'fa-disp', 'fa-ped', 'fa-obs'].forEach(i => $('#' + i).value = ''); $('#fa-dup').innerHTML = '';
+      elegido = null; ponerPista();
       aviso('Faltante reportado ✓'); this.cargar(el);
     };
   },
-  async cargar(el) {
+  consulta() {
     const estados = { por: ['Pendiente de pedir'], ped: ['Pedido'], fin: ['Recibido', 'Recibido incompleto', 'Sin existencia en proveedor'] }[this.pest];
-    let c = sb.from('faltantes').select('*').in('estado', estados).order('prioridad').order('reportado_en', { ascending: false });
-    if (this.pest === 'fin') c = c.limit(50);
-    const filas = await q(c);
+    let c = sb.from('faltantes').select('*, productos(referencia,categoria)').in('estado', estados).order('prioridad').order('reportado_en', { ascending: false });
+    return this.pest === 'fin' ? c.limit(50) : c;
+  },
+  async excel() {
+    const datos = await q(this.consulta());
+    if (!datos.length) return aviso('No hay productos en esta lista para descargar', true);
+    aviso('Preparando el Excel…');
+    await cargarXLSX();
+    const filas = datos.map(f => ({
+      'Producto': f.producto, 'Código': f.productos?.referencia ?? '', 'Categoría': f.productos?.categoria ?? (f.producto_id ? '' : 'No está en el sistema'),
+      'Presentación': f.presentacion ?? '', 'Situación': f.situacion === 'Pedido por cliente' ? 'Lo pidió un cliente' : f.situacion, 'Prioridad': f.prioridad,
+      'Quedan': f.cantidad_disponible ?? '', 'Cantidad a pedir': f.cantidad_pedir ?? '', 'Proveedor': f.proveedor ?? '', 'Estado': f.estado,
+      'Reportado por': nombre(f.reportado_por), 'Fecha': fechaDe(f.reportado_en), 'Observaciones': f.observaciones ?? '',
+    }));
+    const libro = XLSX.utils.book_new(), nom = { por: 'POR PEDIR', ped: 'PEDIDOS', fin: 'CERRADOS' }[this.pest];
+    XLSX.utils.book_append_sheet(libro, hojaExcel(filas), 'Faltantes');
+    XLSX.writeFile(libro, `FALTANTES ${nom} ${hoy()}.xlsx`);
+    aviso(`Excel descargado: ${filas.length} producto${filas.length === 1 ? '' : 's'} ✓`);
+  },
+  async cargar(el) {
+    const filas = await q(this.consulta());
     $('#fa-lista', el).innerHTML = filas.length ? filas.map(f => `<div class="fila" data-id="${f.id}"><div>
       <b>${this.pest !== 'fin' ? `<span class="punto ${f.prioridad === 'Alta' ? 'mal' : 'av'}"></span>` : ''}${esc(f.producto)}</b>${f.presentacion ? ' · ' + esc(f.presentacion) : ''}
       <small>${esc(f.situacion === 'Pedido por cliente' ? 'Lo pidió un cliente' : f.situacion)}${f.cantidad_disponible != null ? ' · quedan ' + f.cantidad_disponible : ''}${f.cantidad_pedir != null ? ' · pedir ' + f.cantidad_pedir : ''}${f.proveedor ? ' · ' + esc(f.proveedor) : ''} · ${esc(nombre(f.reportado_por))} · ${fFecha(fechaDe(f.reportado_en))}</small></div>
@@ -803,6 +905,125 @@ VISTAS.semana = {
   }
 };
 
+// ---------------- ANÁLISIS DE VENTAS (admin) ----------------
+// Ventas = totales de los cierres de caja (vienen de Odoo). Semanas de lunes a domingo.
+const lunesDe = iso => sumarDias(iso, -((diaSemana(iso) + 6) % 7));
+const fCorta = iso => new Date(iso + 'T12:00:00-05:00').toLocaleDateString('es-CO', { timeZone: TZ, day: 'numeric', month: 'short' }).replace('.', '');
+const rangoSem = l => `${fCorta(l)} – ${fCorta(sumarDias(l, 6))}`;
+const variacion = (a, b) => b ? Math.round((a - b) / b * 100) : null;
+const txtVar = (v, sufijo = '') => v == null ? '' : `<span class="${v >= 0 ? 'sube' : 'baja'}">${v >= 0 ? '▲' : '▼'} ${Math.abs(v)}%</span>${sufijo}`;
+const DIAS_SEM = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+const MEDIOS = [['efectivo', 'Efectivo', 'var(--vino)'], ['nequi', 'Nequi', 'var(--atl)'], ['llave', 'Llave', 'var(--neb)']];
+function barras(filas, max) { // filas: {t, v, txt, sub, cls, id}
+  return filas.map(f => `<div class="hbar ${f.cls || ''}"${f.id ? ` data-sem="${f.id}" role="button" tabindex="0"` : ''}><span class="t">${f.t}</span>
+    <span class="p"><i style="width:${max ? Math.max(f.v ? 2 : 0, f.v / max * 100) : 0}%"></i></span><b>${f.txt}</b>${f.sub ? `<small>${f.sub}</small>` : ''}</div>`).join('');
+}
+VISTAS.ventas = {
+  titulo: 'Análisis de ventas', tablas: ['cierres_caja', 'domicilios'], admin: true,
+  montar(el) {
+    this.sem = this.sem || '8';
+    el.innerHTML = `<h2 class="tit">Análisis de <em>ventas</em></h2><p class="sub">Sale de los cierres de caja y los domicilios. Semanas de lunes a domingo.</p>
+      ${chips('sem', [['4', '4 semanas'], ['8', '8 semanas'], ['12', '12 semanas'], ['26', '6 meses']], this.sem)}
+      <div id="v-cont"><p class="vacio">Calculando…</p></div>`;
+    activarChips(el, (g, v) => { this.sem = v; this.cargar(el); });
+  },
+  async cargar(el) {
+    const n = +this.sem, lunesHoy = lunesDe(hoy()), desde = sumarDias(lunesHoy, -7 * (n - 1));
+    const [cierres, doms] = await Promise.all([
+      todas(() => sb.from('cierres_caja').select('fecha,turno,total,efectivo,nequi,llave').eq('anulado', false).gte('fecha', desde).order('fecha')),
+      todas(() => sb.from('domicilios').select('fecha_hora,destino,valor_domicilio,domiciliario_id,medio_pago,estado').gte('fecha_hora', inicioDia(desde)).not('estado', 'in', '("Cancelado","Devuelto")').order('fecha_hora')),
+    ]);
+    const cont = $('#v-cont', el);
+    if (!cierres.length && !doms.length) return (cont.innerHTML = `<div class="card"><p class="vacio">Todavía no hay cierres ni domicilios en este periodo.</p></div>`);
+    const suma = (lista, k) => lista.reduce((a, x) => a + (x[k] || 0), 0);
+    // Semana a semana (se omiten las semanas antes del primer registro)
+    const primera = [cierres[0]?.fecha, doms[0] && fechaDe(doms[0].fecha_hora)].filter(Boolean).sort()[0];
+    const semanas = Array.from({ length: n }, (_, i) => sumarDias(desde, 7 * i)).filter(l => sumarDias(l, 6) >= primera).map(l => {
+      const c = cierres.filter(x => lunesDe(x.fecha) === l), d = doms.filter(x => lunesDe(fechaDe(x.fecha_hora)) === l);
+      return { l, c, d, total: suma(c, 'total'), efectivo: suma(c, 'efectivo'), nequi: suma(c, 'nequi'), llave: suma(c, 'llave'), dias: new Set(c.map(x => x.fecha)).size, cobrados: d.filter(x => x.valor_domicilio > 0).length, pagoDom: suma(d, 'valor_domicilio') };
+    });
+    semanas.forEach((s, i) => (s.var = i ? variacion(s.total, semanas[i - 1].total) : null));
+    this.semanas = semanas;
+    const actual = semanas.find(s => s.l === lunesHoy), completas = semanas.filter(s => s.l !== lunesHoy && s.c.length);
+    const totalPeriodo = suma(cierres, 'total'), promSem = completas.length ? suma(completas, 'total') / completas.length : null;
+    // Esta semana frente a la pasada hasta el mismo día
+    const pasadaAltura = suma(cierres.filter(x => x.fecha >= sumarDias(lunesHoy, -7) && x.fecha <= sumarDias(hoy(), -7)), 'total');
+    const varActual = actual ? variacion(actual.total, pasadaAltura) : null;
+    const maxSem = Math.max(...semanas.map(s => s.total), 1);
+
+    // Por día de la semana (promedio de los días con cierre)
+    const porFecha = {}; cierres.forEach(x => (porFecha[x.fecha] = (porFecha[x.fecha] || 0) + x.total));
+    const dias = [1, 2, 3, 4, 5, 6, 0].map(d => { const f = Object.keys(porFecha).filter(x => diaSemana(x) === d); return { d, n: f.length, prom: f.length ? f.reduce((a, x) => a + porFecha[x], 0) / f.length : 0 }; });
+    const maxDia = Math.max(...dias.map(d => d.prom), 1), mejorDia = [...dias].sort((a, b) => b.prom - a.prom)[0];
+    // Por turno
+    const turnos = ['Mañana', 'Tarde', 'Fin de semana'].map(t => { const c = cierres.filter(x => x.turno === t); return { t, n: c.length, total: suma(c, 'total'), prom: c.length ? suma(c, 'total') / c.length : 0 }; }).filter(t => t.n);
+    const maxTurno = Math.max(...turnos.map(t => t.prom), 1);
+    // Medios de pago
+    const medios = MEDIOS.map(([k, t, color]) => ({ t, color, v: suma(cierres, k) })), totMedios = medios.reduce((a, m) => a + m.v, 0) || 1;
+    // Domicilios
+    const gratis = AJ.conjunto_gratis || 'AquaNova', fuera = doms.filter(x => x.valor_domicilio > 0);
+    const porPersona = Object.values(doms.reduce((a, x) => { const p = a[x.domiciliario_id] ||= { t: nombre(x.domiciliario_id), n: 0, v: 0 }; p.n++; p.v += x.valor_domicilio; return a; }, {})).sort((a, b) => b.n - a.n);
+    const destinos = Object.entries(fuera.reduce((a, x) => { const k = x.destino.trim(); a[k] = (a[k] || 0) + 1; return a; }, {})).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const maxPers = Math.max(...porPersona.map(p => p.n), 1);
+
+    cont.innerHTML = `<div class="kpis">
+        <div class="kpi azul"><span class="k"><span class="c">${svg('chart')}</span>Ventas del periodo</span><span class="v din">${cop(totalPeriodo)}</span><span class="n">${semanas.length} semana${semanas.length === 1 ? '' : 's'} · ${cierres.length} cierres</span></div>
+        <div class="kpi"><span class="k"><span class="c car">${svg('cash')}</span>Promedio semanal</span><span class="v din">${promSem == null ? '—' : cop(promSem)}</span><span class="n">${completas.length ? `de ${completas.length} semana${completas.length === 1 ? '' : 's'} completa${completas.length === 1 ? '' : 's'}` : 'aún no hay semanas completas'}</span></div>
+        <div class="kpi"><span class="k"><span class="c vino">${svg('wallet')}</span>Esta semana</span><span class="v din">${cop(actual?.total || 0)}</span><span class="n">${varActual == null ? 'en curso' : txtVar(varActual, ' vs. la pasada a esta altura')}</span></div>
+        <div class="kpi"><span class="k"><span class="c atl">${svg('truck')}</span>Domicilios</span><span class="v">${doms.length}</span><span class="n">${fuera.length} fuera de ${esc(gratis)} · ${cop(suma(doms, 'valor_domicilio'))}</span></div>
+      </div>
+      <div class="dos"><div>
+        <div class="card"><h3>${svg('chart')}Ventas semana a semana</h3>
+          ${barras([...semanas].reverse().map(s => ({ id: s.l, t: rangoSem(s.l), v: s.total, txt: cop(s.total), cls: s.l === lunesHoy ? 'curso' : '',
+            sub: [s.l === lunesHoy ? 'En curso' : txtVar(s.var, ' vs. anterior'), `${s.dias} día${s.dias === 1 ? '' : 's'} con cierre`, `${s.d.length} domicilio${s.d.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ') })), maxSem)}
+          <p class="ejemplo">Toca una semana para ver el detalle por día.</p></div>
+        <div class="card"><h3>${svg('wallet')}Medios de pago</h3>
+          <div class="mix">${medios.map(m => `<i style="width:${m.v / totMedios * 100}%;background:${m.color}"></i>`).join('')}</div>
+          <div class="res">${medios.map(m => `<div class="l"><span class="ley"><span style="--c:${m.color}">${m.t}</span></span><b>${cop(m.v)} · ${Math.round(m.v / totMedios * 100)}%</b></div>`).join('')}</div></div>
+      </div><div>
+        <div class="card"><h3>${svg('calendar')}Por día de la semana</h3><p class="pista" style="margin:0 0 6px">Promedio de ventas de cada día.${mejorDia?.n ? ` El día más fuerte es el <b>${DIAS_SEM[mejorDia.d].toLowerCase()}</b>.` : ''}</p>
+          ${barras(dias.map(d => ({ t: DIAS_SEM[d.d], v: d.prom, txt: d.n ? cop(d.prom) : '—', sub: d.n ? `${d.n} día${d.n === 1 ? '' : 's'}` : '' })), maxDia)}</div>
+        ${turnos.length ? `<div class="card"><h3>${svg('checks')}Por turno</h3><p class="pista" style="margin:0 0 6px">Promedio por cierre de caja.</p>
+          ${barras(turnos.map(t => ({ t: t.t, v: t.prom, txt: cop(t.prom), sub: `${t.n} cierre${t.n === 1 ? '' : 's'} · ${cop(t.total)} en total` })), maxTurno)}</div>` : ''}
+        <div class="card"><h3>${svg('truck')}Domicilios</h3>
+          <div class="res"><div class="l"><span>En ${esc(gratis)} (gratis)</span><b>${doms.length - fuera.length}</b></div><div class="l"><span>Fuera de ${esc(gratis)} (cobrados)</span><b>${fuera.length}</b></div>
+          ${['Efectivo', 'Nequi', 'Llave'].map(m => `<div class="l"><span>Pagados con ${m}</span><b>${doms.filter(x => x.medio_pago === m).length}</b></div>`).join('')}</div>
+          ${porPersona.length ? `<p class="pista" style="margin:12px 0 4px"><b>Quién los llevó</b></p>${barras(porPersona.map(p => ({ t: esc(p.t), v: p.n, txt: String(p.n), sub: p.v ? `${cop(p.v)} por domicilios cobrados` : 'solo gratis' })), maxPers)}` : ''}
+          ${destinos.length ? `<p class="pista" style="margin:12px 0 4px"><b>Destinos más frecuentes fuera de ${esc(gratis)}</b></p><div class="res">${destinos.map(([d, c]) => `<div class="l"><span>${esc(d)}</span><b>${c}</b></div>`).join('')}</div>` : ''}</div>
+      </div></div>
+      <div class="card"><button class="btn sec" id="v-excel">${svg('chart')}Descargar el análisis en Excel</button>
+        <p class="ejemplo">Si falta un cierre de caja, esa semana se verá más baja. Revisa en Inicio que no haya cierres pendientes.</p></div>`;
+    $$('[data-sem]', cont).forEach(r => r.onclick = r.onkeydown = ev => { if (ev.type === 'keydown' && ev.key !== 'Enter') return; this.detalle(semanas.find(s => s.l === r.dataset.sem)); });
+    $('#v-excel', cont).onclick = () => this.excel(semanas, dias, turnos, porPersona, cierres, doms);
+  },
+  detalle(s) {
+    const fechas = Array.from({ length: 7 }, (_, i) => sumarDias(s.l, i)).filter(f => f <= hoy());
+    const filas = fechas.map(f => { const c = s.c.filter(x => x.fecha === f); return { f, c, total: c.reduce((a, x) => a + x.total, 0), d: s.d.filter(x => fechaDe(x.fecha_hora) === f).length }; });
+    const max = Math.max(...filas.map(f => f.total), 1);
+    abrirHoja(`Semana ${rangoSem(s.l)}`, `<div class="card"><div class="res azul">
+        ${MEDIOS.map(([k, t]) => `<div class="l"><span>${t}</span><b>${cop(s[k])}</b></div>`).join('')}
+        <div class="l tot"><span>Total</span><span>${cop(s.total)}</span></div></div></div>
+      <div class="card"><h3>Día por día</h3>${barras(filas.map(f => ({ t: fFecha(f.f), v: f.total, txt: f.c.length ? cop(f.total) : '—',
+        sub: [f.c.length ? f.c.map(x => esc(x.turno)).join(' + ') : 'Sin cierre', `${f.d} domicilio${f.d === 1 ? '' : 's'}`].join(' · ') })), max)}</div>
+      ${s.pagoDom ? `<p class="ejemplo">Domicilios cobrados esta semana: ${s.cobrados} · ${cop(s.pagoDom)}</p>` : ''}`);
+  },
+  async excel(semanas, dias, turnos, porPersona, cierres, doms) {
+    aviso('Preparando el Excel…');
+    await cargarXLSX();
+    const libro = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(libro, hojaExcel(semanas.map(s => ({ 'Semana': rangoSem(s.l), 'Desde': s.l, 'Hasta': sumarDias(s.l, 6), 'Ventas': s.total, 'Variación vs. anterior (%)': s.var ?? '',
+      'Efectivo': s.efectivo, 'Nequi': s.nequi, 'Llave': s.llave, 'Días con cierre': s.dias, 'Cierres': s.c.length, 'Domicilios': s.d.length, 'Domicilios cobrados': s.cobrados, 'Valor domicilios': s.pagoDom }))), 'Semanas');
+    const porFecha = {}; cierres.forEach(x => { const f = porFecha[x.fecha] ||= { 'Fecha': x.fecha, 'Día': DIAS_SEM[diaSemana(x.fecha)], 'Turnos': [], 'Ventas': 0, 'Efectivo': 0, 'Nequi': 0, 'Llave': 0, 'Domicilios': 0 }; f.Turnos.push(x.turno); f.Ventas += x.total; f.Efectivo += x.efectivo; f.Nequi += x.nequi; f.Llave += x.llave; });
+    doms.forEach(x => { const f = fechaDe(x.fecha_hora); if (porFecha[f]) porFecha[f].Domicilios++; });
+    XLSX.utils.book_append_sheet(libro, hojaExcel(Object.values(porFecha).map(f => ({ ...f, 'Turnos': f.Turnos.join(' + ') }))), 'Por fecha');
+    XLSX.utils.book_append_sheet(libro, hojaExcel(dias.map(d => ({ 'Día': DIAS_SEM[d.d], 'Días con cierre': d.n, 'Venta promedio': Math.round(d.prom) }))), 'Por día de la semana');
+    XLSX.utils.book_append_sheet(libro, hojaExcel(turnos.map(t => ({ 'Turno': t.t, 'Cierres': t.n, 'Ventas': t.total, 'Promedio por cierre': Math.round(t.prom) }))), 'Por turno');
+    XLSX.utils.book_append_sheet(libro, hojaExcel(porPersona.map(p => ({ 'Domiciliario': p.t, 'Domicilios': p.n, 'Valor domicilios cobrados': p.v }))), 'Domicilios por persona');
+    XLSX.writeFile(libro, `ANALISIS DE VENTAS ${hoy()}.xlsx`);
+    aviso('Excel descargado ✓');
+  }
+};
+
 // ---------------- MÁS ----------------
 VISTAS.mas = {
   titulo: 'Más', tablas: [],
@@ -814,7 +1035,7 @@ VISTAS.mas = {
         ${it('#resumen', 'car', 'chart', 'Resumen de caja')}${it('#entrega', 'neb', 'note', 'Entrega de turno')}${it('#faltantes', 'atl', 'box', 'Faltantes')}
         ${it('#correcciones', 'caf', 'pen', 'Correcciones de Odoo')}${it('#vencimientos', 'amb', 'calendar', 'Próximos a vencer')}${it('#mantenimiento', 'gris', 'wrench', 'Mantenimiento')}
       </div></div><div>
-      ${esAdmin() ? `<div class="card menu">${it('#semana', 'vino', 'cash', 'Cierre semanal y pago de domicilios')}${it('#ajustes', 'gris', 'gear', 'Ajustes: empleados, tareas y valores')}</div>` : ''}
+      ${esAdmin() ? `<div class="card menu">${it('#ventas', 'atl', 'chart', 'Análisis de ventas')}${it('#semana', 'vino', 'cash', 'Cierre semanal y pago de domicilios')}${it('#ajustes', 'gris', 'gear', 'Ajustes: empleados, tareas y valores')}</div>` : ''}
       <div class="card"><p>Sesión: <b>${esc(YO.nombre)}</b> · ${esc(YO.correo)}${esAdmin() ? ' · administrador' : ''}</p><button class="btn lin" id="salir">${svg('out')}Cerrar sesión</button></div></div></div>`;
     $('#salir').onclick = async () => { await sb.auth.signOut(); location.hash = ''; location.reload(); };
   }
@@ -879,7 +1100,7 @@ VISTAS.ajustes = {
 // ---------------- RESPALDO ----------------
 async function descargarRespaldo() {
   aviso('Preparando respaldo…');
-  if (!window.XLSX) await new Promise((ok, mal) => { const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; s.onload = ok; s.onerror = mal; document.head.appendChild(s); });
+  await cargarXLSX();
   const tablas = ['cierres_caja', 'domicilios', 'recogidas', 'faltantes', 'correcciones', 'novedades', 'vencimientos', 'mantenimiento', 'tareas', 'tareas_marcadas', 'empleados', 'ajustes', 'auditoria'];
   const libro = XLSX.utils.book_new();
   for (const t of tablas) {
