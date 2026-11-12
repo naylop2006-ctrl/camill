@@ -106,6 +106,58 @@ function abrirRegistrar() {
     ${op('#mas', 'gris', 'grid', 'Más secciones', 'Vencimientos, mantenimiento…')}</div>`,
     h => $$('.opcion', h).forEach(a => a.addEventListener('click', () => cerrarHoja())));
 }
+
+// ---------- Avisos (campana) ----------
+// Los crea la base de datos al dejar una novedad o reportar un faltante (04_notificaciones.sql).
+let AVISOS = [];
+async function cargarAvisos() {
+  const { data } = await sb.from('notificaciones').select('*').order('creado_en', { ascending: false }).limit(40);
+  AVISOS = data || [];
+  const n = AVISOS.filter(a => !a.leida).length, b = $('#badge');
+  b.textContent = n > 9 ? '9+' : String(n); b.hidden = !n;
+  $('#campana').setAttribute('aria-label', n ? `Avisos: ${n} sin leer` : 'Avisos');
+}
+async function marcarLeidos(filtro) {
+  const ids = AVISOS.filter(a => !a.leida && filtro(a)).map(a => a.id);
+  if (!ids.length) return;
+  await sb.from('notificaciones').update({ leida: true, leida_en: new Date().toISOString() }).in('id', ids);
+  await cargarAvisos();
+}
+const puedeAvisarCelular = () => 'Notification' in window && 'serviceWorker' in navigator;
+function abrirAvisos() {
+  const pedir = puedeAvisarCelular() && Notification.permission === 'default';
+  const lista = AVISOS.length ? AVISOS.map(a => `<button class="aviso-it${a.leida ? '' : ' nuevo'}" data-av="${a.id}">
+      <span class="c ${a.tipo === 'faltante' ? 'atl' : 'vino'}">${svg(a.tipo === 'faltante' ? 'box' : 'note')}</span>
+      <span><b>${esc(a.titulo)}</b>${a.detalle ? `<span class="d">${esc(a.detalle.slice(0, 140))}${a.detalle.length > 140 ? '…' : ''}</span>` : ''}<small>${fFechaHora(a.creado_en)}</small></span></button>`).join('')
+    : '<p class="vacio">No tienes avisos todavía.</p>';
+  abrirHoja('Avisos', `${pedir ? `<button class="btn sec" id="av-permiso" style="margin:0 0 12px">${svg('bell')}Activar avisos en este celular</button>` : ''}
+    <div class="avisos">${lista}</div>
+    ${AVISOS.some(a => !a.leida) ? '<button class="btn lin" id="av-todos">Marcar todo como leído</button>' : ''}`, h => {
+    $$('[data-av]', h).forEach(b => b.onclick = () => {
+      const a = AVISOS.find(x => x.id == b.dataset.av); cerrarHoja();
+      if (!a.leida) marcarLeidos(x => x.id === a.id);
+      if (a.enlace) location.hash = a.enlace;
+    });
+    if ($('#av-todos', h)) $('#av-todos', h).onclick = async () => { await marcarLeidos(() => true); abrirAvisos(); };
+    if ($('#av-permiso', h)) $('#av-permiso', h).onclick = async () => {
+      const r = await Notification.requestPermission();
+      aviso(r === 'granted' ? 'Avisos activados en este dispositivo ✓' : 'No se activaron los avisos del celular', r !== 'granted');
+      abrirAvisos();
+    };
+  });
+}
+function avisoNuevo(a) {
+  cargarAvisos();
+  const c = $('#campana'); c.classList.remove('timbre'); void c.offsetWidth; c.classList.add('timbre');
+  aviso('Nuevo aviso: ' + a.titulo);
+  // Aviso del sistema si la app está abierta pero en segundo plano
+  if (puedeAvisarCelular() && Notification.permission === 'granted' && document.hidden) {
+    navigator.serviceWorker.ready.then(r => r.showNotification('Camill · ' + a.titulo, {
+      body: a.detalle || '', icon: 'icon-192.png', badge: 'icon-192.png', tag: 'aviso-' + a.id,
+      data: { url: location.origin + location.pathname + (a.enlace || '') },
+    })).catch(() => {});
+  }
+}
 $('#velo').addEventListener('click', e => { if (e.target.id === 'velo') cerrarHoja(); });
 
 // Confirmación dentro de la app (reemplaza confirm/prompt del navegador).
@@ -784,11 +836,12 @@ VISTAS.ajustes = {
     const formEmp = (e = {}) => abrirHoja(e.id ? e.nombre : 'Nuevo empleado', `<div class="card">
       <label>Nombre</label><input id="ae-nom" value="${esc(e.nombre)}"><label>Correo de Gmail</label><input id="ae-cor" type="email" value="${esc(e.correo)}">
       <label>Rol</label>${chips('rol', [['empleado', 'Empleado'], ['admin', 'Administrador']], e.rol || 'empleado')}
-      <label>Estado</label>${chips('act', [['si', 'Activo'], ['no', 'Inactivo (ya no entra)']], e.activo === false ? 'no' : 'si')}</div>
+      <label>Estado</label>${chips('act', [['si', 'Activo'], ['no', 'Inactivo (ya no entra)']], e.activo === false ? 'no' : 'si')}
+      <label>Avisos de faltantes <i>(para quien hace los pedidos)</i></label>${chips('falt', [['si', 'Recibe'], ['no', 'No recibe']], e.recibe_faltantes ? 'si' : 'no')}</div>
       <button class="btn pri" id="ae-g">Guardar</button>`, h => {
       activarChips(h);
       $('#ae-g', h).onclick = async () => {
-        const fila = { nombre: $('#ae-nom', h).value.trim(), correo: $('#ae-cor', h).value.trim().toLowerCase(), rol: valorChip(h, 'rol'), activo: valorChip(h, 'act') === 'si' };
+        const fila = { nombre: $('#ae-nom', h).value.trim(), correo: $('#ae-cor', h).value.trim().toLowerCase(), rol: valorChip(h, 'rol'), activo: valorChip(h, 'act') === 'si', recibe_faltantes: valorChip(h, 'falt') === 'si' };
         if (!fila.nombre || !fila.correo.includes('@')) return aviso('Escribe nombre y correo', true);
         if (e.id === YO.id && (!fila.activo || fila.rol !== 'admin')) return aviso('No puedes quitarte a ti mismo el acceso de administrador', true);
         await q(e.id ? sb.from('empleados').update(fila).eq('id', e.id) : sb.from('empleados').insert(fila));
@@ -851,6 +904,9 @@ async function navegar() {
   const nombreVista = VISTAS[ruta] && (!VISTAS[ruta].admin || esAdmin()) ? ruta : 'inicio';
   vistaActual = nombreVista; const v = VISTAS[nombreVista], el = $('#pantalla');
   if ($('#velo').hidden === false) cerrarHoja();
+  // Al abrir la pantalla del aviso, se da por visto
+  if (nombreVista === 'entrega') marcarLeidos(a => a.tipo === 'novedad');
+  if (nombreVista === 'faltantes') marcarLeidos(a => a.tipo === 'faltante');
   $('#barra-sub').textContent = `${fFecha(hoy())} · ${v.titulo}`;
   $$('#nav a').forEach(a => a.classList.toggle('act', a.dataset.v === nombreVista));
   window.scrollTo(0, 0);
@@ -895,11 +951,18 @@ async function iniciar() {
   $('#barra').hidden = false; $('#nav').hidden = false;
   $('#avatar').textContent = YO.nombre[0].toUpperCase(); $('#avatar').onclick = () => (location.hash = '#mas');
   $('#registrar').onclick = abrirRegistrar;
+  $('#campana').onclick = abrirAvisos;
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  try { await cargarAvisos(); } catch (e) { console.error(e); }
   if (location.hash.includes('access_token')) history.replaceState(null, '', location.pathname);
   window.addEventListener('hashchange', navegar);
   // Tiempo real: si otra persona registra algo, la lista visible se actualiza sola
   let t;
   sb.channel('cambios').on('postgres_changes', { event: '*', schema: 'public' }, p => {
+    if (p.table === 'notificaciones') {
+      if (p.eventType === 'INSERT' && p.new?.para_id === YO.id) avisoNuevo(p.new); else cargarAvisos();
+      return;
+    }
     if (!VISTAS[vistaActual]?.tablas.includes(p.table)) return;
     if (!$('#velo').hidden) { pendienteRefresco = true; return; }
     clearTimeout(t); t = setTimeout(refrescar, 400);
